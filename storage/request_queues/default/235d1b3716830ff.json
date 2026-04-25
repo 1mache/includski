@@ -1,0 +1,18 @@
+{
+  "unique_key": "https://en.cppreference.com/cpp/header/new",
+  "url": "https://en.cppreference.com/cpp/header/new",
+  "method": "GET",
+  "payload": null,
+  "headers": {},
+  "user_data": {
+    "__crawlee": {
+      "state": 4,
+      "crawlDepth": 1
+    },
+    "header_name": "<new>"
+  },
+  "retry_count": 0,
+  "no_retry": false,
+  "loaded_url": null,
+  "handled_at": "2026-04-25 14:47:29.277404+00:00"
+}

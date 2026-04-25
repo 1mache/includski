@@ -1,0 +1,18 @@
+{
+  "unique_key": "https://en.cppreference.com/cpp/header/cstring",
+  "url": "https://en.cppreference.com/cpp/header/cstring",
+  "method": "GET",
+  "payload": null,
+  "headers": {},
+  "user_data": {
+    "__crawlee": {
+      "state": 4,
+      "crawlDepth": 1
+    },
+    "header_name": "<cstring>"
+  },
+  "retry_count": 0,
+  "no_retry": false,
+  "loaded_url": null,
+  "handled_at": "2026-04-25 14:47:53.914868+00:00"
+}

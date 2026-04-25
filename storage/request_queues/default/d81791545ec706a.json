@@ -1,0 +1,18 @@
+{
+  "unique_key": "https://en.cppreference.com/cpp/header/semaphore",
+  "url": "https://en.cppreference.com/cpp/header/semaphore",
+  "method": "GET",
+  "payload": null,
+  "headers": {},
+  "user_data": {
+    "__crawlee": {
+      "state": 4,
+      "crawlDepth": 1
+    },
+    "header_name": "<semaphore>"
+  },
+  "retry_count": 0,
+  "no_retry": false,
+  "loaded_url": null,
+  "handled_at": "2026-04-25 14:48:22.968874+00:00"
+}
