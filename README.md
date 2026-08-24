@@ -1,6 +1,6 @@
 # includski
 
-Small personal project to learn TypeScript. It's a VS Code extension that offers a Quick Fix to insert the right C++ standard-library `#include` for a `std::` name (or a known global like `INT_MAX`, `uint32_t`) under the cursor — no clangd or compile_commands needed.
+Small project to learn TypeScript. It's a VS Code extension that offers a Quick Fix to insert the right C++ standard-library `#include` for a `std::` name (or a known global like `INT_MAX`, `uint32_t`) under the cursor — no clangd or compile_commands needed.
 
 ## Install
 
