@@ -1,9 +1,8 @@
 import * as vscode from 'vscode';
 import { hasBitsStdcpp, hasHeaderIncluded } from './includeCheck';
+import { findIncludeInsertion } from './insertPosition';
 import { resolveHeader } from './lookup';
 import { findQualifiedNameAt } from './qualifiedName';
-
-export const PRINT_INCLUDE_COMMAND = 'includski.printInclude';
 
 export class IncludeQuickFixProvider implements vscode.CodeActionProvider {
 	constructor(private readonly map: Record<string, string>) {}
@@ -32,11 +31,9 @@ export class IncludeQuickFixProvider implements vscode.CodeActionProvider {
 		}
 
 		const action = new vscode.CodeAction(`Include ${header}`, vscode.CodeActionKind.QuickFix);
-		action.command = {
-			command: PRINT_INCLUDE_COMMAND,
-			title: `Include ${header}`,
-			arguments: [header],
-		};
+		const insertion = findIncludeInsertion(text, header);
+		action.edit = new vscode.WorkspaceEdit();
+		action.edit.insert(document.uri, document.positionAt(insertion.offset), insertion.text);
 
 		return [action];
 	}
