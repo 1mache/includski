@@ -29,8 +29,6 @@ After you change the code, re-run `vsce package` + `code --install-extension` (a
 
 Open the folder in VS Code, then press `F5` (or Run → Start Debugging). This launches a separate Extension Development Host window with `includski` active, for testing changes without touching your real install.
 
-In that window, open a `.cpp` file, place the cursor on a `std::` name (e.g. `std::vector`) or a global like `INT_MAX`, and trigger the Quick Fix (lightbulb, or `Ctrl+.`).
-
 ![Quick Fix demo](images/demo.gif)
 
 ## Other useful commands
