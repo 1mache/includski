@@ -1,1 +1,7 @@
-{}
+{
+  "move": "<utility>",
+  "forward": "<utility>",
+  "size": "<iterator>",
+  "begin": "<iterator>",
+  "end": "<iterator>"
+}
