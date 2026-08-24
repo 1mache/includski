@@ -1,6 +1,6 @@
 # includski
 
-VS Code extension that offers a Quick Fix to insert the C++ standard-library `#include` for a `std::` name under the cursor. Personal tool: no clangd / compile_commands required. Mapping is a shipped JSON table, not a compiler.
+VS Code extension that offers a Quick Fix to insert the C++ standard-library `#include` for a `std::` qualified name, or a bare C-compat **global name** (`INT_MAX`, `uint32_t`, …), under the cursor. Personal tool: no clangd / compile_commands required. Mapping is a shipped JSON table, not a compiler.
 
 This file is the locked product spec. Change the spec here before changing behaviour.
 
@@ -10,22 +10,24 @@ The spec below is implemented: `IncludeQuickFixProvider` (`src/codeActionProvide
 
 `scripts/generate_cppreference_mappings.py` is fixed and has produced a committed `res/mappings.json` (0 scrape errors, 29 collisions recorded in `res/scrape-collisions.json`). `res/overrides.json` now has the expected override examples (`move`, `forward` → `<utility>`; `size`, `begin`, `end` → `<iterator>`).
 
+Global-name matching is implemented: `src/globalName.ts` (whitelist-gated bare-identifier match, tested in `src/test/unit/globalName.test.ts`), wired into `IncludeQuickFixProvider` (`src/codeActionProvider.ts`) alongside qualified-name matching. The generator's C-compat wrapper detection (`wrapper_stems`, `_record_page_symbols` in `scripts/generate_cppreference_mappings.py`) is implemented and self-tested via `--selftest`. `res/globals.json` is committed (332 names, scraped live from the 27 wrapper-header pages and cross-checked against `res/mappings.json`).
+
 ## Product
 
 - **Documents:** `language: cpp` only.
 - **Trigger:** `CodeActionProvider` returning `CodeActionKind.QuickFix` for the range under the cursor. Lightbulb / `Ctrl+.`. No command-palette command, no diagnostics, no underline, no `source.*` / on-save actions, no as-you-type rewrite.
 - **Activation:** `onLanguage: cpp` (or equivalent) so opening a C++ file is enough. A command is not required for activation.
-- **Name matching:** `std::` and `::std::` only. No `using namespace std`, no `using std::vector`.
-- **Parser:** regex for qualified names. Hits inside comments and strings are accepted.
+- **Name matching:** `std::` / `::std::` qualified names, **or** a bare identifier that is a known **global name** (closed whitelist, see "Global name lookup"). No `using namespace std`, no `using std::vector`, no arbitrary bare-identifier matching.
+- **Parser:** regex for qualified names; whitelist lookup for global names. Hits inside comments and strings are accepted.
 - **Headers:** C++ standard library only (`<vector>`, `<cstdint>`, …). Not project headers, not third-party, not `*.h` C-compat pages as scrape targets.
 
-clangd already offers “Add include” when a compilation database exists. This extension exists for editing **without** that.
+clangd already offers "Add include" when a compilation database exists, and cpptools' built-in "Add #include" quick fix covers `std::` names via IntelliSense once a file successfully parses. This extension's twist: it needs no working IntelliSense config to begin with (static JSON, not a parser), and it covers **global names** — macros like `INT_MAX` are a known weak spot for IntelliSense-based "Add #include" because a macro isn't a resolvable AST symbol the same way a declared identifier is.
 
 ## When the Quick Fix exists
 
 Return an action only when all of these hold:
 
-1. The cursor (or selection) sits on a `std::` / `::std::` qualified name.
+1. The cursor (or selection) sits on a `std::` / `::std::` qualified name, **or** on a bare identifier that is a key in the global-name whitelist.
 2. Lookup (below) yields a header.
 3. That header is not already present as `#include <…>` (whitespace-tolerant).
 4. The file does not already `#include <bits/stdc++.h>` (exact header name, spacing-tolerant; do not substring-match `bits`).
@@ -53,6 +55,16 @@ Known nested-namespace names (v1 freeze; hand-maintained, not scraped as a speci
 
 `chrono`, `filesystem`, `pmr`, `ranges`, `views`, `placeholders`, `literals`, `this_thread`, `chrono_literals`, `string_literals`, `string_view_literals`
 
+## Global name lookup
+
+A **global name** is a bare identifier usable without `std::` because it comes from a C-compat wrapper header (`<cstdint>`, `<climits>`, `<cstddef>`, …) — e.g. `INT_MAX`, `uint32_t`, `NULL`. No walk, no template-argument handling: the identifier under the cursor is looked up directly.
+
+1. Take the bare identifier under the cursor (word-boundary regex, no `::` involved).
+2. It resolves only if it is a member of `res/globals.json` (the whitelist). Anything not on the whitelist is not a Quick Fix target — this is deliberately **not** general bare-identifier matching, so it never fires on the user's own identically-named locals, macros, or types.
+3. If whitelisted, the header comes from the same merged map as qualified names (`mappings.json` then `overrides.json`), keyed by that identifier.
+
+Qualified-name matching and global-name matching are independent triggers checked at the same cursor position; whichever one matches produces the action. `std::uint32_t` is handled by qualified-name lookup already (has `std::`); bare `uint32_t` is handled here.
+
 ## Insert position
 
 Always `#include <header>` (angle brackets).
@@ -70,10 +82,11 @@ Runtime reads committed files. Never crawl the network from the extension.
 |---|---|
 | `res/mappings.json` | Generated `{ "symbol": "<header>", ... }`. Committed. |
 | `res/overrides.json` | Hand-maintained. Merged **on top** of scrape; override keys always win. Committed. |
+| `res/globals.json` | Generated array of symbol names eligible for bare (no-`std::`) matching — see "Global name lookup". Every name in it is also a key in `mappings.json`; this file adds no header data of its own. Committed. |
 | `res/scrape-errors.json` | Failed request URLs and reasons. Extension does not load this. |
 | `res/scrape-collisions.json` | Symbols seen on more than one header; first index-order header kept in the map. Extension does not load this. |
 
-Merged map used at runtime: `mappings.json` then `overrides.json`.
+Merged map used at runtime: `mappings.json` then `overrides.json`. `res/globals.json` is loaded separately, as the global-name whitelist (§ Global name lookup) — it gates *which* bare identifiers may trigger, it does not contribute header values.
 
 ### Generator (`scripts/generate_cppreference_mappings.py`)
 
@@ -87,6 +100,8 @@ Maintainer tool only. Polite crawl of https://en.cppreference.com C++ header pag
 - C++ `c*` wrappers (`<cstdio>`, `<cstdint>`, …). Skip `*.h` C-compat pages.
 
 **Collisions:** first header in cppreference index order wins. Record losers in `scrape-collisions.json` so overrides can be added later.
+
+**C-compat wrapper detection (`res/globals.json`):** the index page (`/cpp/header`) groups headers under section headings, same `mw-headline`/`id` pattern as header pages. Track the current section while walking the index the same way `extract_symbols` tracks `KEPT_SECTION_IDS` on header pages; while inside the "C compatibility headers" section, every stem encountered is a wrapper header (`cstdint`, `climits`, `cstddef`, `cstdio`, … — the fixed set of `c*` headers mirroring a legacy C `.h` header). Every symbol scraped from a wrapper header's page (same `KEPT_SECTION_IDS` rules as any other header) is written to `globals.json`, deduplicated. Do not hardcode the stem list by hand — derive it from the index page's own section grouping, so it can't drift out of sync with cppreference. If the expected section heading isn't found on the index page, treat it as a scrape error (do not silently emit an empty `globals.json`).
 
 **Failures:** write whatever symbols succeeded to `mappings.json`. Write failures to `scrape-errors.json`. Exit non-zero if any request failed. Do not abort with an empty `{}` solely because one URL failed. Do not put error strings into the symbol map.
 
@@ -107,7 +122,7 @@ Maintainer tool only. Polite crawl of https://en.cppreference.com C++ header pag
 
 ## “Works”
 
-Manual: F5, open a `.cpp`, cursor on `std::vector` with no includes → one Quick Fix “Include `<vector>`” → insert at the position rules above. Cursor on `std::chrono::milliseconds` → `<chrono>` when lookup hits. Cursor on `std::vector` when `<vector>` or `<bits/stdc++.h>` is already included → no action.
+Manual: F5, open a `.cpp`, cursor on `std::vector` with no includes → one Quick Fix “Include `<vector>`” → insert at the position rules above. Cursor on `std::chrono::milliseconds` → `<chrono>` when lookup hits. Cursor on `std::vector` when `<vector>` or `<bits/stdc++.h>` is already included → no action. Cursor on bare `INT_MAX` with no includes → one Quick Fix "Include `<climits>`". Cursor on bare `size` (a user's own local variable, not on the whitelist) → no action.
 
 A successful scrape is not required to call the editor path done; a committed non-empty map is required for real std names to resolve.
 
