@@ -6,7 +6,7 @@ This file is the locked product spec. Change the spec here before changing behav
 
 ## Current repo vs this spec
 
-The workspace is still a Yo Code Hello World stub (`includski.helloWorld`), empty `res/mappings.json` (`{}`), and a Crawlee scraper in `scripts/generate_cppreference_mappings.py` that is meant to fill the map from cppreference and has not produced a usable file (hard-fail on any request error; index path may miss `/w/cpp/header`).
+The workspace is still a Yo Code Hello World stub (`includski.helloWorld`). `scripts/generate_cppreference_mappings.py` is fixed and has produced a committed `res/mappings.json` (0 scrape errors, collisions recorded in `res/scrape-collisions.json`). `res/overrides.json` does not exist yet.
 
 Until the spec below is implemented, the extension does not add includes.
 
@@ -118,3 +118,158 @@ A successful scrape is not required to call the editor path done; a committed no
 - Remove or stop shipping the Hello World command once the provider exists.
 - Load merged JSON from `ExtensionContext.extensionUri` / `asAbsolutePath`, not from cwd.
 - Python deps for the scraper live with the scraper (e.g. venv + requirements); they are not extension runtime deps.
+
+# Python Expert Agent – Best Practices
+
+This file defines the coding standards, safety rules, and workflow expectations for a Python expert AI agent. All code you write or modify MUST follow these rules unless explicitly overridden by the user.
+
+---
+
+## 1. Style & Formatting (PEP 8 Baseline)
+
+- Use **4 spaces** per indentation level; **no tabs**.
+- Limit lines to **88 characters** (black/ruff default); docstrings/comments to **72 characters**.
+- Separate top-level definitions with **2 blank lines**; methods in a class with **1 blank line**.
+- Use **`ruff`** and **`black`** (or equivalent) for formatting and linting; enforce in CI.
+
+---
+
+## 2. Naming Conventions
+
+- **Modules / packages**: `lower_with_under`
+- **Classes / types**: `CapWords`
+- **Functions / methods / variables**: `lower_with_under`
+- **Constants**: `UPPER_WITH_UNDER`
+- **Private / internal helpers**: prefix with `_` (e.g. `_internal_helper`).
+
+Avoid emoji, unicode symbols, or non-ASCII characters in identifiers.
+
+---
+
+## 3. Imports & File Structure
+
+- Imports at the top of the file, grouped and sorted:
+  1. Standard library
+  2. Third-party packages
+  3. Local project imports
+- Avoid wildcard imports (`from x import *`).
+- Use explicit relative imports inside packages.
+- Each `.py` file should have a clear, single responsibility.
+
+---
+
+## 4. Type Hints (Modern Python)
+
+- Annotate **all public functions and methods** (parameters and return types).
+- Use modern syntax:
+  - `list[str]`, `dict[str, int]`, `tuple[int, ...]`
+  - `X | Y` instead of `Union[X, Y]`
+  - `T | None` instead of `Optional[T]`
+- Use `from __future__ import annotations` in libraries targeting multiple Python 3.x versions.
+- Use `dataclass`, `enum`, and `Protocol` for structured data and interfaces.
+- Prefer Pydantic models for validated, structured I/O (APIs, configs, agent outputs).
+
+---
+
+## 5. Docstrings & Comments (PEP 257)
+
+- Write docstrings for **all public modules, classes, functions, and methods**.
+- Use triple double-quotes: `"""..."""`.
+- One-line docstrings: keep on a single line.
+- Multi-line docstrings:
+  - First line: concise summary.
+  - Blank line.
+  - Details: behavior, arguments (with types), return value, and raised exceptions.
+- Use `#` for inline comments; explain **why**, not **what**.
+- Avoid tautological comments (e.g., “increment i by 1” above `i += 1`).
+
+---
+
+## 6. Error Handling & Robustness
+
+- Use specific exception types; avoid bare `except:`.
+- Avoid magic numbers; use named constants.
+- Use context managers (`with`) for resources (files, sockets, DB connections).
+- Prefer f-strings for formatting.
+- Validate inputs (types, ranges) at API boundaries; use `pydantic` or similar for structured validation.
+- Fail fast: raise early on invalid state instead of hiding errors.
+
+---
+
+## 7. Testing & Quality
+
+- Write tests for all public behavior (unit tests; integration tests where relevant).
+- Run linters (`ruff`, `pylint`) and type checkers (`mypy`, `pyright`) in CI.
+- Keep functions small and single-purpose; refactor large functions.
+- Prefer pure functions where possible; minimize hidden global state.
+
+---
+
+## 8. Agent-Specific Safety & Control
+
+These rules are critical when the agent is writing, modifying, or executing Python code:
+
+- **Cap agent loops**: always respect `max_iterations` / `max_steps` (e.g., 5–25) to prevent infinite tool-calling.
+- **Validate tool arguments** with schemas (e.g., Pydantic) before execution.
+- **Least privilege**: tools should be read-only by default; require explicit approval for destructive actions.
+- **Sandbox code execution**: run untrusted code in isolated containers with resource limits.
+- **Log every tool call**: name, args, result, latency; keep an audit trail.
+- **Structured outputs**: use Pydantic models or JSON schemas for agent responses; retry on validation failure.
+- **Grounding for RAG**: use retrieved context only; return “I don’t know” when retrieval is empty or insufficient.
+
+---
+
+## 9. Project Structure & Maintainability
+
+- Use a clear layout, e.g.:
+
+  ```text
+  project_root/
+    src/
+      your_package/
+    tests/
+    docs/
+    pyproject.toml
+  ```
+
+- Pin dependencies in `pyproject.toml` or `requirements.txt`; avoid implicit global state.
+- Separate concerns:
+  - Ingestion vs. query paths
+  - Config vs. logic
+  - Core vs. adapters (DB, external APIs, agents)
+- Prefer small, composable modules over monolithic files.
+
+---
+
+## 10. Workflow Expectations for the Agent
+
+When asked to write or modify Python code:
+
+1. **Plan briefly** (in comments or a short explanation) before implementing.
+2. **Follow all rules above** by default.
+3. **Prefer clarity and correctness over cleverness**; optimize only when necessary and justified.
+4. **Use type hints and docstrings** in all new public code.
+5. **Ask for clarification** if requirements are ambiguous or conflict with these standards.
+6. **When in doubt**, choose the more explicit, readable, and testable option.
+
+---
+
+## 11. Tooling Commands (Reference)
+
+Use these as the canonical commands for style and quality checks (adjust paths as needed):
+
+```bash
+# Formatting
+ruff format .
+
+# Linting
+ruff check .
+
+# Type checking
+mypy src/
+
+# Tests
+pytest tests/
+```
+
+The agent should assume these tools are available and write code that passes them without additional configuration.

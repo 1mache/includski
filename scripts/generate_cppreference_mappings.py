@@ -1,280 +1,387 @@
 #!/usr/bin/env python3
 """Generate `res/mappings.json` from cppreference C++ header pages.
 
-The script uses Crawlee's `BeautifulSoupCrawler` so the crawl has retry logic,
-request handling timeouts, and a consistent request lifecycle. It first crawls
-https://en.cppreference.com/cpp/header to collect header page URLs, then visits
-those header pages and extracts symbol names from section tables.
+Crawls https://en.cppreference.com/cpp/header for the list of standard
+library headers, then visits each header page and pulls the "primary"
+symbols (classes, types, macros, constants, enums, objects, concepts) out of
+its section tables. Functions, includes, and synopsis rows are skipped, per
+the includski product spec (see CLAUDE.md, "Generator" section).
 
-Output format:
-- JSON object
-- key: symbol name visible on cppreference, for example `vector` or `operator new`
-- value: header name in angle-bracket form, for example `<vector>`
+Output files (default: `res/`):
+- `mappings.json`: `{"symbol": "<header>", ...}`, written even if some pages
+  failed to fetch.
+- `scrape-collisions.json`: `{"symbol": {"winner": "<header>", "losers": [...]}}`
+  for symbols seen on more than one header page (first index-order header
+  wins the map; `winner` duplicates the value already in `mappings.json`, so
+  this file is self-contained for reviewing collisions and writing overrides).
+- `scrape-errors.json`: `[{"url": ..., "reason": ...}]` for pages that could
+  not be fetched after retries.
+
+Exits non-zero if any page failed. Never writes an error string into the
+symbol map.
 """
 
 from __future__ import annotations
 
-import asyncio
+import argparse
 import json
 import re
+import sys
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from datetime import timedelta
 from pathlib import Path
-from typing import Any
-from urllib.parse import unquote, urljoin, urlparse
+from typing import Final
 
+import requests
 from bs4 import BeautifulSoup
-from crawlee import ConcurrencySettings, Request
-from crawlee.crawlers import BeautifulSoupCrawler, BeautifulSoupCrawlingContext
+from bs4.element import Tag
 
-BASE_URL = 'https://en.cppreference.com'
-HEADER_INDEX_URL = f'{BASE_URL}/cpp/header'
-HEADER_LINK_RE = re.compile(r'^/(?:w/)?(?:cpp|c)/header/[^/#?]+$')
-SYMBOL_LINK_RE = re.compile(r'^/w/(?:cpp|c)/(?!header/).+')
-INDEX_PATHS = {'/cpp/header', '/cpp/header/'}
-DEFAULT_OUTPUT_PATH = Path(__file__).resolve().parents[1] / 'res' / 'mappings.json'
+BASE_URL: Final = "https://en.cppreference.com"
+INDEX_URL: Final = f"{BASE_URL}/cpp/header"
+USER_AGENT: Final = "includski-mapping-generator/0.1 (personal VS Code extension)"
+REQUEST_TIMEOUT_SECONDS: Final = 30
+MAX_ATTEMPTS: Final = 3
+DEFAULT_WORKERS: Final = 4
+
+# Only these cppreference section ids hold "primary" entities per CLAUDE.md.
+# Functions / Includes / Synopsis / Customization_point_objects / Helpers /
+# Defect_reports are deliberately excluded.
+KEPT_SECTION_IDS: Final = frozenset(
+    {
+        "Classes",
+        "Types",
+        "Type_aliases",
+        "Macros",
+        "Constants",
+        "Enumerations",
+        "Objects",
+        "Concepts",
+    }
+)
+
+def _css_classes(tag: Tag) -> list[str]:
+    """Normalize a tag's `class` attribute to a list (bs4 types it as str | list[str] | None)."""
+    value: str | list[str] = tag.get("class") or []
+    return [value] if isinstance(value, str) else value
+
+
+HEADER_LINK_RE: Final = re.compile(r"^/cpp/header/([^/#?]+)$")
+IDENTIFIER_RE: Final = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+RES_DIR: Final = Path(__file__).resolve().parents[1] / "res"
+DEFAULT_MAPPINGS_PATH: Final = RES_DIR / "mappings.json"
+DEFAULT_COLLISIONS_PATH: Final = RES_DIR / "scrape-collisions.json"
+DEFAULT_ERRORS_PATH: Final = RES_DIR / "scrape-errors.json"
+
+
+@dataclass(frozen=True)
+class FetchError:
+    """A page that could not be fetched after retries."""
+
+    url: str
+    reason: str
+
+
+@dataclass(frozen=True)
+class HeaderPage:
+    """One cppreference header page: its `<header>` name and stem."""
+
+    stem: str
+    header: str  # angle-bracket form, e.g. "<vector>"
+    url: str
 
 
 @dataclass
-class CrawlState:
-    """Mutable state shared across crawler handlers."""
+class ScrapeResult:
+    """Accumulated output of a full or partial crawl."""
 
-    header_requests: list[Request] = field(default_factory=list)
-    symbol_to_header: dict[str, str] = field(default_factory=dict)
-    collisions: dict[str, set[str]] = field(default_factory=dict)
-    failed_requests: list[tuple[str, str]] = field(default_factory=list)
-    discovered_headers: set[str] = field(default_factory=set)
+    mappings: dict[str, str] = field(default_factory=dict)
+    collisions: dict[str, list[str]] = field(default_factory=dict)
+    errors: list[FetchError] = field(default_factory=list)
+
+    def add_symbol(self, symbol: str, header: str) -> None:
+        """Record `symbol` as belonging to `header`, first header wins.
+
+        A symbol can repeat many times on one losing header (e.g. every
+        `std::hash<std::chrono::X>` specialization collapses to the bare
+        symbol `hash`), so losers are deduplicated per symbol.
+        """
+        existing = self.mappings.get(symbol)
+        if existing is None:
+            self.mappings[symbol] = header
+        elif existing != header and header not in self.collisions.get(symbol, []):
+            self.collisions.setdefault(symbol, []).append(header)
 
 
-STATE = CrawlState()
+def fetch(session: requests.Session, url: str) -> str:
+    """GET `url` and return its decoded body, retrying on failure.
 
-
-def is_header_link(href: str | None) -> bool:
-    """Return True when href points to a cppreference header page.
-
-    The index page contains many links, but we only care about header pages.
-    This keeps the crawl focused and prevents accidental traversal of unrelated
-    pages.
+    Raises the last `requests` exception if all attempts fail.
     """
-
-    if not href:
-        return False
-
-    parsed = urlparse(urljoin(BASE_URL, href))
-    return bool(HEADER_LINK_RE.fullmatch(parsed.path.rstrip('/')))
-
-
-def is_symbol_link(href: str | None) -> bool:
-    """Return True when href points to a cppreference symbol documentation page."""
-
-    if not href or href.startswith('#'):
-        return False
-
-    parsed = urlparse(urljoin(BASE_URL, href))
-    path = parsed.path.rstrip('/')
-
-    if not path or is_header_link(href):
-        return False
-
-    return bool(SYMBOL_LINK_RE.match(path))
+    last_error: Exception | None = None
+    for _attempt in range(MAX_ATTEMPTS):
+        try:
+            response = session.get(url, timeout=REQUEST_TIMEOUT_SECONDS)
+            response.raise_for_status()
+            return response.text
+        except requests.RequestException as error:
+            last_error = error
+    assert last_error is not None
+    raise last_error
 
 
-def normalize_header_name(raw_text: str, href: str) -> str:
-    """Normalize a header label to angle-bracket form.
+def parse_index(html: str) -> list[HeaderPage]:
+    """Extract standard-library header pages from the index page HTML.
 
-    cppreference usually renders header labels as `<vector>` or `<stdatomic.h>`.
-    When extra annotations appear, the first token still contains the canonical
-    header name, so we strip annotations but preserve the angle brackets.
+    Header stems ending in `.h` are C-compat pages and are skipped, per
+    CLAUDE.md ("Skip *.h C-compat pages as scrape targets").
     """
+    soup = BeautifulSoup(html, "html.parser")
+    content = soup.select_one("#mw-content-text") or soup
 
-    text = raw_text.strip()
-    if not text:
-        text = unquote(urlparse(urljoin(BASE_URL, href)).path.rstrip('/').split('/')[-1])
-
-    # Keep only the visible header token, for example `<vector>` from
-    # `<vector> (C++20)`.
-    token = text.split()[0]
-    match = re.search(r'<[^>]+>', token)
-    if match:
-        return match.group(0)
-
-    if token.startswith('<') and token.endswith('>'):
-        return token
-
-    return f'<{token.strip("<>")}>'
-
-
-def canonical_header_name_from_request(request_url: str, user_data: Any) -> str:
-    """Read canonical header name from request metadata, with URL fallback."""
-
-    if isinstance(user_data, dict):
-        header_name = user_data.get('header_name')
-        if isinstance(header_name, str) and header_name:
-            return header_name
-
-    segment = unquote(urlparse(request_url).path.rstrip('/').split('/')[-1])
-    return f'<{segment}>' if segment else request_url
-
-
-def normalize_symbol_name(text: str) -> str:
-    """Collapse whitespace around symbol text while preserving the symbol itself."""
-
-    return re.sub(r'\s+', ' ', text).strip()
-
-
-def extract_index_headers(soup: BeautifulSoup) -> list[Request]:
-    """Extract header-page requests from the cppreference header index.
-
-    The index page may contain repeated links to the same header in explanatory
-    text, so we deduplicate by canonical header name and keep the first occurrence
-    to preserve stable ordering.
-    """
-
-    container = soup.select_one('#mw-content-text') or soup.body or soup
-    seen_headers: set[str] = set()
-    header_requests: list[Request] = []
-
-    for anchor in container.find_all('a', href=True):
-        href = anchor.get('href', '')
-        if not is_header_link(href):
+    pages: list[HeaderPage] = []
+    seen_stems: set[str] = set()
+    for anchor in content.find_all("a", href=True):
+        match = HEADER_LINK_RE.match(str(anchor["href"]))
+        if match is None:
             continue
-
-        canonical_name = normalize_header_name(anchor.get_text(' ', strip=True), href)
-        if canonical_name in seen_headers:
+        stem = match.group(1)
+        if stem in seen_stems or stem.endswith(".h"):
             continue
-
-        seen_headers.add(canonical_name)
-        request_url = urljoin(BASE_URL, href)
-        header_requests.append(Request.from_url(request_url, user_data={'header_name': canonical_name}))
-
-    return header_requests
+        seen_stems.add(stem)
+        pages.append(HeaderPage(stem=stem, header=f"<{stem}>", url=f"{BASE_URL}/cpp/header/{stem}"))
+    return pages
 
 
-def extract_symbols_from_header_page(soup: BeautifulSoup) -> list[str]:
-    """Collect symbol names listed in the page section tables.
+def _section_id(heading: Tag) -> str | None:
+    """Return the `id` of a heading's `span.mw-headline`, if present."""
+    headline = heading.find("span", class_="mw-headline")
+    if headline is None:
+        return None
+    section_id = headline.get("id")
+    return section_id if isinstance(section_id, str) else None
 
-    cppreference header pages are table-driven. We walk table rows, look at the
-    first table cell, and gather any non-header links inside it. Rows whose first
-    cell contains another header link are skipped, because those rows represent
-    included headers rather than symbols defined or documented in the current
-    header page.
+
+def _normalize_symbol(raw_text: str) -> str | None:
+    """Turn one `<span>`'s text into a bare identifier, or None to reject it.
+
+    Rejects text containing `<` (template specializations like
+    `vector<bool>` or `std::hash<std::vector<bool>>`), collapses `A :: B` to
+    `A::B`, keeps only the last `::`-separated component, and requires the
+    result to be a plain identifier (drops `operator+`, prose fragments).
     """
+    text = " ".join(raw_text.split()).replace(" :: ", "::")
+    if "<" in text:
+        return None
+    last_component = text.split("::")[-1]
+    return last_component if IDENTIFIER_RE.fullmatch(last_component) else None
 
-    container = soup.select_one('#mw-content-text') or soup.body or soup
+
+def _row_symbols(row: Tag) -> list[str]:
+    """Collect normalized symbol names from one `tr.t-dsc` description row.
+
+    cppreference renders a row's name cell in two shapes:
+    - Multiple synonyms sharing one description (`int8_t`/`int16_t`/...,
+      `vector`/its hash specialization): a `span.t-lines` group with one
+      `<span>` per name.
+    - A single name (`std::chrono::milliseconds`, `true_type`), rendered as
+      a plain `<a>`, `<code>`, or `span.t-lc` with no `t-lines` wrapper.
+    """
+    first_cell = row.find("td")
+    if not isinstance(first_cell, Tag):
+        return []
+
+    name_groups = first_cell.select("span.t-lines")
+    if name_groups:
+        names: list[str] = []
+        for name_group in name_groups:
+            for span in name_group.find_all("span", recursive=False):
+                if any(cls.startswith("t-mark") for cls in _css_classes(span)):
+                    continue
+                for version_mark in span.select("span.t-dsc-small"):
+                    version_mark.decompose()
+                symbol = _normalize_symbol(span.get_text(" ", strip=True))
+                if symbol is not None:
+                    names.append(symbol)
+        return names
+
+    for annotation in first_cell.find_all(True):
+        classes = _css_classes(annotation)
+        if "editsection" in classes or any(cls.startswith("t-mark") for cls in classes):
+            annotation.decompose()
+    symbol = _normalize_symbol(first_cell.get_text(" ", strip=True))
+    return [symbol] if symbol is not None else []
+
+
+def extract_symbols(html: str) -> list[str]:
+    """Collect primary symbol names from a header page's kept sections.
+
+    Walks the content area in document order, tracking the current `h3`
+    section id, and gathers symbols from `tr.t-dsc` rows while that section
+    is one of `KEPT_SECTION_IDS`.
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    content = soup.select_one("#mw-content-text") or soup
+
     symbols: list[str] = []
-    seen: set[str] = set()
-
-    for row in container.find_all('tr'):
-        cells = row.find_all('td', recursive=False)
-        if not cells:
+    current_section: str | None = None
+    for element in content.find_all(["h3", "tr"]):
+        if element.name == "h3":
+            current_section = _section_id(element)
             continue
-
-        first_cell = cells[0]
-        if first_cell.find('td') is not None:
-            # Defensive guard for malformed nested tables.
+        if current_section not in KEPT_SECTION_IDS:
             continue
-
-        anchors = [anchor for anchor in first_cell.find_all('a', href=True) if is_symbol_link(anchor.get('href'))]
-        if not anchors:
+        if "t-dsc" not in _css_classes(element):
             continue
-
-        candidate_texts = [normalize_symbol_name(anchor.get_text(' ', strip=True)) for anchor in anchors]
-
-        for candidate in candidate_texts:
-            if not candidate or candidate in seen:
-                continue
-
-            seen.add(candidate)
-            symbols.append(candidate)
-
+        symbols.extend(_row_symbols(element))
     return symbols
 
 
-async def process_index_page(context: BeautifulSoupCrawlingContext) -> None:
-    """Handle the header index page by queueing header pages discovered there."""
-
-    STATE.header_requests = extract_index_headers(context.soup)
-    STATE.discovered_headers = {request.user_data['header_name'] for request in STATE.header_requests}  # type: ignore[index]
-
-    context.log.info(f'Discovered {len(STATE.header_requests)} header pages from index.')
-    await context.add_requests(STATE.header_requests)
-
-
-async def process_header_page(context: BeautifulSoupCrawlingContext) -> None:
-    """Handle a single header page and record every symbol found on it."""
-
-    header_name = canonical_header_name_from_request(context.request.url, context.request.user_data)
-    symbols = extract_symbols_from_header_page(context.soup)
-
-    context.log.info(f'Extracted {len(symbols)} symbols from {header_name}.')
-
-    for symbol in symbols:
-        existing_header = STATE.symbol_to_header.get(symbol)
-        if existing_header is None:
-            STATE.symbol_to_header[symbol] = header_name
-            continue
-
-        if existing_header == header_name:
-            continue
-
-        # Deterministic policy: first header wins. Keep a collision log so we can
-        # inspect symbols that show up in multiple headers.
-        STATE.collisions.setdefault(symbol, {existing_header}).add(header_name)
+def scrape_header_page(session: requests.Session, page: HeaderPage) -> tuple[HeaderPage, list[str] | FetchError]:
+    """Fetch and parse one header page; return its symbols or a FetchError."""
+    try:
+        html = fetch(session, page.url)
+    except requests.RequestException as error:
+        return page, FetchError(url=page.url, reason=repr(error))
+    return page, extract_symbols(html)
 
 
-async def build_mappings(output_path: Path) -> None:
-    """Run the crawl and write the final JSON mapping to disk."""
+def scrape(pages: list[HeaderPage], *, workers: int = DEFAULT_WORKERS) -> ScrapeResult:
+    """Crawl `pages` concurrently and build a ScrapeResult.
 
-    crawler = BeautifulSoupCrawler(
-        # Rate-limit the crawl to keep the run polite and stable.
-        concurrency_settings=ConcurrencySettings(desired_concurrency=10, max_concurrency=20, max_tasks_per_minute=180),
-        max_request_retries=3,
-        max_requests_per_crawl=2000,
-        request_handler_timeout=timedelta(seconds=90),
-        respect_robots_txt_file=False,
+    Every header contributes its own stem as a key first (CLAUDE.md: "Inject
+    the header stem as a key even if tables are odd"), then its scraped
+    symbols, so the stem never loses a collision to a symbol of the same
+    name.
+    """
+    result = ScrapeResult()
+    session = requests.Session()
+    session.headers["User-Agent"] = USER_AGENT
+
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        for page, outcome in executor.map(lambda p: scrape_header_page(session, p), pages):
+            result.add_symbol(page.stem, page.header)
+            if isinstance(outcome, FetchError):
+                result.errors.append(outcome)
+                continue
+            for symbol in outcome:
+                result.add_symbol(symbol, page.header)
+
+    return result
+
+
+def write_json(path: Path, payload: object) -> None:
+    """Atomically write `payload` as pretty, sorted-key JSON to `path`."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    temp_path = path.with_suffix(path.suffix + ".tmp")
+    temp_path.write_text(text, encoding="utf-8")
+    temp_path.replace(path)
+
+
+def run_selftest() -> None:
+    """Offline check of the HTML parsing logic against a fixed snippet."""
+    sample_index = f"""
+    <div id="mw-content-text">
+      <a href="/cpp/header/vector">&lt;vector&gt;</a>
+      <a href="/cpp/header/vector">&lt;vector&gt;</a>
+      <a href="/cpp/header/stdatomic.h">&lt;stdatomic.h&gt;</a>
+      <a href="/w/cpp/header/chrono">&lt;chrono&gt;</a>
+    </div>
+    """
+    pages = parse_index(sample_index)
+    assert [p.stem for p in pages] == ["vector"], pages
+
+    sample_header = """
+    <div id="mw-content-text">
+      <h3><span class="mw-headline" id="Includes">Includes</span></h3>
+      <tr class="t-dsc"><td><span class="t-lines"><span>
+        <a href="/cpp/header/compare">&lt;compare&gt;</a></span></span></td></tr>
+      <h3><span class="mw-headline" id="Classes">Classes</span></h3>
+      <tr class="t-dsc"><td><div><span class="t-lines"><span>
+        <a href="/cpp/container/vector">vector</a></span></span></div></td></tr>
+      <tr class="t-dsc"><td><div><span class="t-lines"><span>
+        std::hash<span class="t-dsc-small">&lt;std::vector&lt;bool&gt;&gt;</span>
+      </span></span></div></td></tr>
+      <h3><span class="mw-headline" id="Types">Types</span></h3>
+      <tr class="t-dsc"><td><span class="t-lines">
+        <span>int8_t</span><span>int16_t</span></span></td></tr>
+      <tr class="t-dsc"><td><span class="t-lc">
+        <a href="/cpp/chrono/duration">std::chrono::milliseconds</a></span>
+        <span class="t-mark-rev t-since-cxx11">(C++11)</span></td></tr>
+      <tr class="t-dsc"><td><code>true_type</code></td></tr>
+      <h3><span class="mw-headline" id="Functions">Functions</span></h3>
+      <tr class="t-dsc"><td><span class="t-lines"><span>
+        <a href="/cpp/algorithm/fill">fill</a></span></span></td></tr>
+    </div>
+    """
+    symbols = extract_symbols(sample_header)
+    assert symbols == ["vector", "hash", "int8_t", "int16_t", "milliseconds", "true_type"], symbols
+
+    assert _normalize_symbol("std :: chrono :: milliseconds") == "milliseconds"
+    assert _normalize_symbol("vector<bool>") is None
+    assert _normalize_symbol("operator+") is None
+
+    print("selftest OK")
+
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    """Parse command-line arguments for the generator CLI."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--headers",
+        nargs="+",
+        metavar="STEM",
+        help="Only crawl these header stems (e.g. vector chrono), skipping the index fetch.",
     )
+    parser.add_argument("--out", type=Path, default=DEFAULT_MAPPINGS_PATH, help="Path to write mappings.json to.")
+    parser.add_argument(
+        "--workers", type=int, default=DEFAULT_WORKERS, help="Number of concurrent page fetches."
+    )
+    parser.add_argument(
+        "--selftest", action="store_true", help="Run offline parser checks and exit, without any network access."
+    )
+    return parser.parse_args(argv)
 
-    @crawler.router.default_handler
-    async def default_handler(context: BeautifulSoupCrawlingContext) -> None:
-        path = urlparse(context.request.url).path.rstrip('/')
-        if path in INDEX_PATHS:
-            await process_index_page(context)
-        else:
-            await process_header_page(context)
 
-    @crawler.failed_request_handler
-    async def failed_handler(context: Any, error: Exception) -> None:
-        url = getattr(getattr(context, 'request', None), 'url', '<unknown>')
-        STATE.failed_requests.append((url, repr(error)))
-        context.log.error(f'Failed request after retries: {url} -> {error!r}')
+def main(argv: list[str] | None = None) -> int:
+    """CLI entry point. Returns the process exit code."""
+    args = parse_args(sys.argv[1:] if argv is None else argv)
 
-    await crawler.run([HEADER_INDEX_URL])
+    if args.selftest:
+        run_selftest()
+        return 0
 
-    if STATE.failed_requests:
-        failed_urls = '\n'.join(f' - {url}: {error}' for url, error in STATE.failed_requests)
-        raise RuntimeError(f'Crawl failed for some requests; mappings file will not be written:\n{failed_urls}')
+    session = requests.Session()
+    session.headers["User-Agent"] = USER_AGENT
 
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    payload = json.dumps(STATE.symbol_to_header, ensure_ascii=False, indent=2, sort_keys=True) + '\n'
+    if args.headers:
+        pages = [HeaderPage(stem=stem, header=f"<{stem}>", url=f"{BASE_URL}/cpp/header/{stem}") for stem in args.headers]
+    else:
+        pages = parse_index(fetch(session, INDEX_URL))
 
-    temp_path = output_path.with_suffix(output_path.suffix + '.tmp')
-    temp_path.write_text(payload, encoding='utf-8')
-    temp_path.replace(output_path)
+    result = scrape(pages, workers=args.workers)
+
+    out_path: Path = args.out
+    collisions_path = out_path.parent / "scrape-collisions.json"
+    errors_path = out_path.parent / "scrape-errors.json"
+
+    collisions_payload = {
+        symbol: {"winner": result.mappings[symbol], "losers": losers} for symbol, losers in result.collisions.items()
+    }
+
+    write_json(out_path, result.mappings)
+    write_json(collisions_path, collisions_payload)
+    write_json(errors_path, [{"url": e.url, "reason": e.reason} for e in result.errors])
 
     print(
-        'Crawl complete: '
-        f'{len(STATE.header_requests)} headers, '
-        f'{len(STATE.symbol_to_header)} symbols, '
-        f'{len(STATE.collisions)} collisions, '
-        f'written to {output_path}'
+        f"Crawl complete: {len(pages)} headers, {len(result.mappings)} symbols, "
+        f"{len(result.collisions)} collisions, {len(result.errors)} errors, "
+        f"written to {out_path}"
     )
 
-
-async def main() -> None:
-    """Entry point used by the command line wrapper."""
-
-    await build_mappings(DEFAULT_OUTPUT_PATH)
+    return 1 if result.errors else 0
 
 
-if __name__ == '__main__':
-    asyncio.run(main())
+if __name__ == "__main__":
+    sys.exit(main())

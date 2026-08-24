@@ -1,0 +1,205 @@
+{
+  "INFINITY": {
+    "losers": [
+      "<cmath>"
+    ],
+    "winner": "<cfloat>"
+  },
+  "NAN": {
+    "losers": [
+      "<cmath>"
+    ],
+    "winner": "<cfloat>"
+  },
+  "NULL": {
+    "losers": [
+      "<cstring>",
+      "<cwchar>",
+      "<clocale>",
+      "<cstdio>"
+    ],
+    "winner": "<cstddef>"
+  },
+  "WCHAR_MAX": {
+    "losers": [
+      "<cwchar>"
+    ],
+    "winner": "<cstdint>"
+  },
+  "WCHAR_MIN": {
+    "losers": [
+      "<cwchar>"
+    ],
+    "winner": "<cstdint>"
+  },
+  "WCHAR_WIDTH": {
+    "losers": [
+      "<cwchar>"
+    ],
+    "winner": "<cstdint>"
+  },
+  "WEOF": {
+    "losers": [
+      "<cwctype>"
+    ],
+    "winner": "<cwchar>"
+  },
+  "atomic": {
+    "losers": [
+      "<atomic>"
+    ],
+    "winner": "<memory>"
+  },
+  "codecvt": {
+    "losers": [
+      "<locale>"
+    ],
+    "winner": "<codecvt>"
+  },
+  "common_type": {
+    "losers": [
+      "<chrono>"
+    ],
+    "winner": "<type_traits>"
+  },
+  "compare_three_way": {
+    "losers": [
+      "<functional>"
+    ],
+    "winner": "<compare>"
+  },
+  "exception": {
+    "losers": [
+      "<meta>"
+    ],
+    "winner": "<exception>"
+  },
+  "formatter": {
+    "losers": [
+      "<chrono>"
+    ],
+    "winner": "<format>"
+  },
+  "hash": {
+    "losers": [
+      "<stacktrace>",
+      "<system_error>",
+      "<memory>",
+      "<bitset>",
+      "<functional>",
+      "<optional>",
+      "<typeindex>",
+      "<variant>",
+      "<vector>",
+      "<string_view>",
+      "<string>",
+      "<text_encoding>",
+      "<chrono>",
+      "<filesystem>",
+      "<thread>"
+    ],
+    "winner": "<coroutine>"
+  },
+  "ignore": {
+    "losers": [
+      "<utility>"
+    ],
+    "winner": "<tuple>"
+  },
+  "iostream": {
+    "losers": [
+      "<istream>"
+    ],
+    "winner": "<iostream>"
+  },
+  "is_error_code_enum": {
+    "losers": [
+      "<ios>"
+    ],
+    "winner": "<system_error>"
+  },
+  "istream": {
+    "losers": [
+      "<istream>"
+    ],
+    "winner": "<ranges>"
+  },
+  "mbstate_t": {
+    "losers": [
+      "<cwchar>"
+    ],
+    "winner": "<cuchar>"
+  },
+  "monostate": {
+    "losers": [
+      "<variant>"
+    ],
+    "winner": "<utility>"
+  },
+  "size_t": {
+    "losers": [
+      "<cstdlib>",
+      "<cstring>",
+      "<cuchar>",
+      "<cwchar>",
+      "<ctime>",
+      "<cstdio>"
+    ],
+    "winner": "<cstddef>"
+  },
+  "tm": {
+    "losers": [
+      "<ctime>"
+    ],
+    "winner": "<cwchar>"
+  },
+  "tuple": {
+    "losers": [
+      "<utility>"
+    ],
+    "winner": "<tuple>"
+  },
+  "tuple_element": {
+    "losers": [
+      "<utility>",
+      "<array>"
+    ],
+    "winner": "<tuple>"
+  },
+  "tuple_size": {
+    "losers": [
+      "<utility>",
+      "<array>"
+    ],
+    "winner": "<tuple>"
+  },
+  "unwrap_ref_decay": {
+    "losers": [
+      "<functional>"
+    ],
+    "winner": "<type_traits>"
+  },
+  "unwrap_reference": {
+    "losers": [
+      "<functional>"
+    ],
+    "winner": "<type_traits>"
+  },
+  "uses_allocator": {
+    "losers": [
+      "<tuple>",
+      "<flat_map>",
+      "<flat_set>",
+      "<queue>",
+      "<stack>",
+      "<future>"
+    ],
+    "winner": "<memory>"
+  },
+  "wint_t": {
+    "losers": [
+      "<cwctype>"
+    ],
+    "winner": "<cwchar>"
+  }
+}
