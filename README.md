@@ -2,6 +2,8 @@
 
 Small project to learn TypeScript. It's a VS Code extension that offers a Quick Fix to insert the right C++ standard-library `#include` for a `std::` name (or a known global like `INT_MAX`, `uint32_t`) under the cursor — no clangd or compile_commands needed.
 
+![Quick Fix demo](images/demo.gif)
+
 ## Install
 
 ```bash
@@ -28,8 +30,6 @@ After you change the code, re-run `vsce package` + `code --install-extension` (a
 ## Debug / develop
 
 Open the folder in VS Code, then press `F5` (or Run → Start Debugging). This launches a separate Extension Development Host window with `includski` active, for testing changes without touching your real install.
-
-![Quick Fix demo](images/demo.gif)
 
 ## Other useful commands
 
