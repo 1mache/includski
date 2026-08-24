@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { insertInclude } from '../../insertPosition';
+import { findIncludeInsertion } from '../../insertPosition';
+
+function insertInclude(text: string, header: string): string {
+	const { offset, text: insertText } = findIncludeInsertion(text, header);
+	return text.slice(0, offset) + insertText + text.slice(offset);
+}
 
 test('empty file inserts at line 0', () => {
 	assert.equal(insertInclude('', '<vector>'), '#include <vector>\n');

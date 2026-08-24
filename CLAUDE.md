@@ -6,9 +6,9 @@ This file is the locked product spec. Change the spec here before changing behav
 
 ## Current repo vs this spec
 
-The workspace is still a Yo Code Hello World stub (`includski.helloWorld`). `scripts/generate_cppreference_mappings.py` is fixed and has produced a committed `res/mappings.json` (0 scrape errors, collisions recorded in `res/scrape-collisions.json`). `res/overrides.json` does not exist yet.
+The spec below is implemented: `IncludeQuickFixProvider` (`src/codeActionProvider.ts`) is registered for `{ language: 'cpp' }` with `providedCodeActionKinds: [QuickFix]`, activation is `onLanguage:cpp`, and `contributes` is empty (Hello World command removed). Lookup (`src/lookup.ts`), qualified-name matching (`src/qualifiedName.ts`), include-presence checks (`src/includeCheck.ts`), and insert-position rules (`src/insertPosition.ts`) each have unit tests under `src/test/unit`.
 
-Until the spec below is implemented, the extension does not add includes.
+`scripts/generate_cppreference_mappings.py` is fixed and has produced a committed `res/mappings.json` (0 scrape errors, 29 collisions recorded in `res/scrape-collisions.json`). `res/overrides.json` exists but is still empty `{}` — the expected override examples (`move`, `forward`, `size`, `begin`, `end`) are not yet added, so those `std::` names don't resolve.
 
 ## Product
 

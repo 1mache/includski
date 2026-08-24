@@ -20,11 +20,6 @@ export function findIncludeInsertion(text: string, header: string): IncludeInser
 	return { offset, text: (needsLeadingNewline ? '\n' : '') + `#include ${header}\n` };
 }
 
-export function insertInclude(text: string, header: string): string {
-	const { offset, text: insertText } = findIncludeInsertion(text, header);
-	return text.slice(0, offset) + insertText + text.slice(offset);
-}
-
 function findInsertOffset(text: string): number {
 	const lastInclude = lastMatchEnd(text, INCLUDE_LINE_PATTERN);
 	if (lastInclude !== undefined) {
