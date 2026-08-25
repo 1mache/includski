@@ -4,8 +4,7 @@
 Crawls https://en.cppreference.com/cpp/header for the list of standard
 library headers, then visits each header page and pulls the "primary"
 symbols (classes, types, macros, constants, enums, objects, concepts) out of
-its section tables. Functions, includes, and synopsis rows are skipped, per
-the includski product spec (see CLAUDE.md, "Generator" section).
+its section tables. Functions, includes, and synopsis rows are skipped.
 
 Output files (default: `res/`):
 - `mappings.json`: `{"symbol": "<header>", ...}`, written even if some pages
@@ -39,7 +38,7 @@ from bs4.element import Tag
 
 BASE_URL: Final = "https://en.cppreference.com"
 INDEX_URL: Final = f"{BASE_URL}/cpp/header"
-USER_AGENT: Final = "includski-mapping-generator/0.1 (personal VS Code extension)"
+USER_AGENT: Final = "includski-mapping-generator/0.1"
 REQUEST_TIMEOUT_SECONDS: Final = 30
 MAX_ATTEMPTS: Final = 3
 DEFAULT_WORKERS: Final = 4
